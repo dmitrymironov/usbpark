@@ -1,0 +1,13 @@
+#include	<list>
+#include	<string>
+#include	<deque>
+#include	<iostream>
+#include	"parkAssist.h"
+#include	"parkSetup.h"
+
+std::list<std::string> Novorado::Parking::WebCamTab::getCaptureDevices()
+{
+	std::list<std::string> rv;
+	rv.push_back("v4l2://");
+	return rv;
+}

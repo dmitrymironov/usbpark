@@ -1,0 +1,319 @@
+//
+// $Id: parkAssist.h,v 1.41 2012/03/26 16:36:31 dmi Exp $
+//
+#ifndef	PARK_ASSIST_H
+#define	PARK_ASSIST_H
+
+#include	<QWidget>
+#include	<QTimer>
+#include	<vector>
+#include	<map>
+#include	<set>
+#include	<novopark.h>
+#include	<QLabel>
+#include	<QImage>
+#include	<QPixmap>
+#include	<QSystemTrayIcon>
+#include	<QMenu>
+#include	<QAction>
+#include	<QCloseEvent>
+#include	<QPushButton>
+#include	<QTime>
+#include	<QPen>
+#include	<QTranslator>
+#include	"ParkingProtocol.h"
+#include	<QWaitCondition>
+#include	<QMutex>
+
+#define	APP_RELOAD_CODE	10
+
+// Delay which controls how often should we poll the data feed
+// It will avoid compromising conTroller performance
+#define	USB_POLLS_MSEC	50
+#define	USB_IDLE_POLL	500
+
+class QMessageBox;
+
+namespace Novorado {
+
+	namespace Media {
+		class VideoFrame;
+		class WebCamThread;
+		class SoundThread;
+		class VoiceNotification;
+		class nBeep;
+		};
+
+	namespace Devices {
+
+		class Firmware {
+
+			std::string m_most_recent;
+
+			// Version -> file name
+			std::map<std::string,std::string> m_list;
+
+			std::vector<std::string> m_data;
+
+			std::vector<const char*> m_nullTerminatedStrPointers;
+
+			public:
+
+				std::string recentVersion();
+
+				// Version -> file name
+				std::map<std::string,std::string> versions();
+
+				const char** loadFirmware(const std::string&);
+			};
+		};
+
+	namespace Parking {
+
+		// Make a valid pointer class
+		class Settings;
+
+		class ParkAssist : public QWidget, public ParktronicUpdateCallback {
+
+			Q_OBJECT
+
+			// Firmware being flushed
+			PtrHolder<Devices::Firmware> m_firmware;
+
+			// Screen modal info window for firmware update
+			PtrHolder<QMessageBox> infoWindow;
+
+		public:
+
+			struct SensorVisual {
+
+				SensorVisual(){ visible=false; active=false; }
+
+				void setActive(bool x){ active=x; }
+
+				void init(QPoint l,float st,float sp){
+					loc=l;
+					startAng=st*16.;
+					spanAng=sp*16.;
+					}
+
+				QPoint loc;
+				float startAng, spanAng;
+				bool visible, active;
+				};
+
+			struct Flags {
+				bool soundBusy: 1;
+				bool configRequested: 1;
+				bool muteSound: 1;
+				bool haveFeed: 1;
+				Flags();
+				};
+
+		private:
+			Flags flags;
+			// Beep delay will be set accordingly to the distance notification policy
+			//bool m_soundBusy;
+			//bool f_configRequested;
+			int m_argc;
+			char** m_argv;
+
+			PtrHolder<Media::WebCamThread> m_webcam;
+
+			Media::SoundThread* soundThread;
+			Media::VoiceNotification* voiceThread;
+			PtrHolder<Media::nBeep> beep;
+
+			QLabel	m_webcamVideo;
+			QPushButton* buttonSound;
+
+			// Sometimes device keeps connecting and disconnecting.
+			// In order to avoid frequent window hide/unhide, let's set a delay
+			QTimer showTimer, hideTimer;
+
+			void setButton(QPushButton*);
+			QPushButton* buttonSettings;
+			QPushButton* buttonMinimize;
+			QPushButton* buttonExit;
+
+			QString msg;
+			QPen textPen;
+			void setupNotifications();
+
+			void paintDistance(QPainter& p);
+			void paintEvent ( QPaintEvent * event );
+
+			PtrHolder<Parktronic> m_parktronic;
+
+			QLabel theConnectionBall;
+			QPixmap backgroundImage,okImage,waitImage,systrayImage;
+
+			QAction *restoreAction;
+			QAction *setupAction;
+			QAction *quitAction;
+
+			QSystemTrayIcon *trayIcon;
+			QMenu *trayIconMenu;
+
+			void createTrayIcon();
+			void createActions();
+
+			void initSensors(std::vector<SensorVisual>&);
+			void paintSensor(QPainter&,HeadLogicNumber);
+
+			// Keeps info on heads distance change (0..num sensors -1)
+			std::map<HeadLogicNumber,DistanceCM> m_headChange;
+
+			// That will be collected and passed to setupDialog()
+			std::set<LineId> m_unknown_devices;
+			std::map<LineId, std::set<HeadId> > m_unknown_heads;
+
+			// LineId:HeadId --> head
+			// std::map<LineId, std::map<HeadId,int> > m_allHeads;
+			// std::string soundPath;
+			// int m_showDelay, m_hideDelay;
+
+			std::string m_beepFile;
+			QTimer m_idleTimer;
+			QTime m_prevUsbPoll;
+
+			void closeEvent(QCloseEvent*);
+
+			PtrHolder<Parking::Settings> m_settings;
+
+			void initActions();
+
+			void fixFirmware();
+
+			void loadImages();
+
+			signals:
+
+				// Used to send signal to another thread (Pixamp&Timer thread unsafety)
+				void signalHeadChange(Novorado::HeadLogicNumber,Novorado::DistanceCM);
+
+				void deviceConnected();
+				void deviceDisconnected();
+				void feedStarted();
+				void feedStopped();
+				void placeVideo(const QRect&);
+				void makeSound(const std::string&);
+				void ping();
+				void firmwareUpdateProgress(const QString&);
+				void headConnected(LineId,HeadId);
+				void configRequested();
+				void askIfUserWantFirmwareUpdate(const QString&,const QString&);
+				void firmwareUpdateFinished(bool);
+				void deviceSignalLost(Novorado::LineId);
+				void gotBuzzerFL(unsigned char, unsigned char,int fHz);
+				void gotHeadsShift(std::vector<unsigned char>);
+
+				void wantFirmwareString();
+				void closeInfoWindow();
+				void showFirmwareInfo(std::string);
+
+				void firmwareOutOfDate(std::string dev,std::string rec);
+
+			public:
+
+				enum SOUND_NOTIFICATION_MODE {
+					SNM_VOICE,
+					SNM_TONES,
+					SNM_UNKNOWN
+					};
+
+				ParkAssist(int,char**);
+				~ParkAssist();
+
+				void setSoundNotificationMode(SOUND_NOTIFICATION_MODE);
+
+				void openWebcam(int argc, char** argv);
+				void startSound();
+
+				void onNewDevice(LineId);
+				void onNewHead(LineId,HeadId);
+				void onDistanceChange(LineId,const Pair&);
+				void onStatusChange(STATUS, std::string);
+				const char** onFirmwareMode();
+				void buzzerFL(unsigned char,unsigned char, int fHz);
+				void headsShift(std::vector<unsigned char>);
+
+				QTranslator& translator();
+
+				Parktronic& parktronic();
+
+				Parking::Settings* settings() { return (Parking::Settings*)(m_settings); }
+
+			private slots:
+
+				void onFirmwareOutdated(std::string,std::string);
+
+				void enableIconActivation();
+
+				void buttonSound_toggled(bool);
+				void buttonExit_clicked(bool);
+				void buttonMinimize_clicked(bool);
+				void buttonSettings_clicked(bool);
+
+				void setIcon(int index);
+				void iconActivated(QSystemTrayIcon::ActivationReason);
+				void showMessage();
+				void messageClicked();
+
+				void showEvent(QShowEvent*);
+				void hideEvent(QHideEvent*);
+
+				void onIdle();
+				void enableBeeps();
+				void muteSound(bool);
+
+				void loadSettings();
+
+				void askFirmwareString();
+				void onCloseInfoWindow();
+				void onShowFirmwareInfo(std::string);
+
+				void onWebCamUpdate(Novorado::Media::VideoFrame*,bool f=false);
+
+				void reloadApplication();
+				void quitApplication();
+
+				void onFeedStart();
+				void onFeedStop();
+				void onDeviceConnected();
+				void onDeviceDisconnected();
+
+				void resizeEvent(QResizeEvent*);
+
+				void onHeadChange(Novorado::HeadLogicNumber head,Novorado::DistanceCM distance);
+				void onDeviceSignalLost(Novorado::LineId);
+
+				void onBeep();
+
+				void setupDialog();
+
+				/*!
+					Call the slot to poll the data by issuing a quant.
+					Once it is called, usbThread and Parktronic will enter quant-based mode
+					and will not bombard the device with polling event.
+
+					Parktronic.quant() will be called
+
+					To restore a normal operation, one have to use Parktronic.doProcess()
+				*/
+				void usbPoll();
+
+			protected:
+				void clearScreenAndStopVideo();
+				//bool m_flagMuteSound;
+				//bool m_flagHaveFeed;
+
+				// Answer firmware question in a GUI thread
+				const char** m_firmwareString;
+				PtrHolder<QWaitCondition> m_waitFirmwareString;
+				QMutex m_waitFirmwareMutex;
+				//PtrHolder<Novorado::Devices::Firmware> m_frm;
+			};
+	};
+};
+#endif//PARK_ASSIST_H

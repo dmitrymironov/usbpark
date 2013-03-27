@@ -1,0 +1,239 @@
+#include "parkAssist.h"
+#include "VlcPlayer.h"
+#include "parkSetup.h"
+#include <iostream>
+#include "PASettings.h"
+
+using namespace Novorado::Parking;
+
+#if	defined(PRINT_CALLS)
+struct PrintThingy{
+	std::string msg;
+	PrintThingy(const std::string& s){ std::cout << "BEGIN " << (msg=s) << std::endl; }
+	~PrintThingy(){ std::cout << "END== " << msg << std::endl; }
+	};
+#endif
+
+ void ParkAssist::closeEvent(QCloseEvent *event)
+ {
+#ifdef	PRINT_CALLS
+std::cout << "void ParkAssist::closeEvent(QCloseEvent *event)" << std::endl;
+#endif
+     if (trayIcon->isVisible()) {
+/*         if(showOnce) {
+		QMessageBox::information(this, tr("Systray"),
+                                  tr("The program will keep running in the "
+                                     "system tray. To terminate the program, "
+                                     "choose <b>Quit</b> in the context menu "
+                                     "of the system tray entry."));
+
+		showOnce=false;
+		}*/
+         hide();
+         event->ignore();
+     }
+ }
+
+void ParkAssist::enableIconActivation()
+{
+	connect(trayIcon, SIGNAL(activated(QSystemTrayIcon::ActivationReason)),
+				this, SLOT(iconActivated(QSystemTrayIcon::ActivationReason)));
+
+	systrayImage=QPixmap(":images/parking50.gif");
+	trayIcon->setIcon(systrayImage);
+}
+
+ void ParkAssist::iconActivated(QSystemTrayIcon::ActivationReason reason)
+ {
+#ifdef	PRINT_CALLS
+std::cout << "void ParkAssist::iconActivated(QSystemTrayIcon::ActivationReason reason)" << std::endl;
+#endif
+	QRect
+		r=trayIcon->geometry();//,
+		//rc = trayIcon->contextMenu()->geometry();
+
+	QPoint
+		contextP = r.bottomRight();
+
+	contextP.ry() -= 120;//rc.height();
+
+	switch (reason) {
+		case QSystemTrayIcon::Trigger:
+
+			trayIcon->contextMenu()->move(contextP);
+			trayIcon->contextMenu()->show();
+
+			/*
+			disconnect(trayIcon, SIGNAL(activated(QSystemTrayIcon::ActivationReason)),
+				this, SLOT(iconActivated(QSystemTrayIcon::ActivationReason)));
+
+			// Set gray image for next 10 seconds
+			QTimer::singleShot(10000,this,SLOT(enableIconActivation()));
+
+			systrayImage=QPixmap(":images/parking50-inactive.gif");
+			trayIcon->setIcon(systrayImage);
+
+			if(isVisible()) hide(); else show();
+			*/
+
+			break;
+		case QSystemTrayIcon::DoubleClick:
+// 			if(isVisible()) hide(); else show();
+			break;
+		case QSystemTrayIcon::MiddleClick:
+//			showMessage(); there is no message
+			break;
+		default:;
+	}
+ }
+
+void ParkAssist::onDeviceConnected()
+{
+#ifdef	PRINT_CALLS
+std::cout << "void ParkAssist::onDeviceConnected()" << std::endl;
+#endif
+	theConnectionBall.setPixmap(okImage);
+	if(!showTimer.isActive()){
+		hideTimer.stop();
+		showTimer.start(m_settings->showDelay()*1000);
+		}
+}
+
+void ParkAssist::onDeviceDisconnected()
+{
+#ifdef	PRINT_CALLS
+std::cout << "void ParkAssist::onDeviceDisconnected()" << std::endl;
+#endif
+	showTimer.stop();
+	hideTimer.start(m_settings->hideDelay()*1000);
+	theConnectionBall.setPixmap(waitImage);
+	beep->stop();
+}
+
+void ParkAssist::showEvent(QShowEvent* e)
+{
+#ifdef	PRINT_CALLS
+	PrintThingy forThatDayWeShouldLayDownOurPrayers("ParkAssist::showEvent(QShowEvent* e)");
+#endif
+	QWidget::showEvent(e);
+ 	showTimer.stop();
+ 	hideTimer.stop();
+//
+// Start the camera
+//
+	// That have to be called BEFORE VoiceThread
+	if(m_settings->videoEnabled()) openWebcam(m_argc,m_argv);
+}
+
+void ParkAssist::hideEvent(QHideEvent* e)
+{
+#ifdef	PRINT_CALLS
+std::cout << "void ParkAssist::hideEvent(QHideEvent* e)" << std::endl;
+#endif
+	// It happens on feed stop, so it's more or less valid approach
+	// to shut idle processing in hidden state. We're not gonna need the
+	// data and notifications anyway
+	QWidget::hideEvent(e);
+	if(showTimer.isActive()) showTimer.stop();
+	if(hideTimer.isActive()) hideTimer.stop();
+	beep->stop();
+//
+// Shut the camera
+//
+	if(m_webcam) clearScreenAndStopVideo();
+}
+
+
+void ParkAssist::onFeedStart()
+{
+#ifdef	PRINT_CALLS
+std::cout << "void ParkAssist::onFeedStart()" << std::endl;
+#endif
+	//--show();
+	theConnectionBall.setPixmap(okImage);
+
+	if(!showTimer.isActive()){
+		showTimer.start(m_settings->showDelay()*1000);
+		hideTimer.stop();
+		}
+
+	flags.haveFeed = true;
+}
+
+void ParkAssist::onFeedStop()
+{
+#if	defined PRINT_CALLS
+std::cout << "void ParkAssist::onFeedStop()" << std::endl;
+#endif
+	theConnectionBall.setPixmap(waitImage);
+	showTimer.stop();
+	if(!hideTimer.isActive()){
+#if	defined PRINT_CALLS
+		std::cout << "Lost signal, closing in " << m_settings->hideDelay() << "sec" << std::endl;
+#endif
+		hideTimer.start(m_settings->hideDelay()*1000);
+		beep->stop();
+		}
+	//--hide();
+
+	flags.haveFeed = false;
+	// -- it will create a flood pretty much. Let's continue
+	// in quant() way
+	// if(m_parktronic) m_parktronic->doProcess();
+
+	//
+	// Mark all the sensors as inactive
+	//
+
+	for(size_t i=0;i<m_settings->m_sensors.size();i++){
+		m_settings->m_sensors[i].setActive(false);
+		m_headChange[i]=302; // Head must be out of range to do not trigger any alarms
+		}
+
+	update();
+}
+
+extern std::string parkAssistVersion;
+
+void ParkAssist::setupDialog()
+{
+#ifdef	PRINT_CALLS
+std::cout << "void ParkAssist::setupDialog()" << std::endl;
+#endif
+
+	// If we already lunched SetupDialog, it will simply have no effect
+	if(Parking::SetupDialog::visible()) return;
+
+	hide();
+
+	int retCode=QDialog::Accepted;
+
+	{
+		Novorado::Parking::SetupDialog sd(m_unknown_devices,m_unknown_heads,this, m_settings);
+
+		std::map<LineId, std::map<HeadId,HeadLogicNumber> > h = m_settings->heads();
+
+		//sd.setWindowTitle((std::string("Parking Assistant ")+parkAssistVersion).c_str());
+		sd.setWindowTitle((std::string("Settings")).c_str());
+
+		for(std::map<LineId, std::map<HeadId,HeadLogicNumber> >::iterator i=h.begin();
+			i!=h.end(); i++){
+
+			for(std::map<HeadId,HeadLogicNumber>::iterator j=i->second.begin();
+				j!=i->second.end(); j++){
+
+				sd.headsTab().addHead(i->first,j->first);
+				}
+			}
+
+		retCode=sd.exec();
+	}
+
+	// Restart USB thread
+	//loadSettings();
+
+	if(retCode==QDialog::Accepted) {
+		reloadApplication();
+		} else if(retCode==QDialog::Rejected) quitApplication();
+
+}

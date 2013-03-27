@@ -1,0 +1,457 @@
+/*
+----------------------------------------------------------------------
+CONTENTS of this file is private property of Novorado, LLC
+======================================================================
+Source Code is distributed for reference purposes only for Novorado 
+customers. For other uses, please contact Novorado 
+http://www.novorado.com or on our facebook/twitter page
+
+You may use source code in your non-commercial and educational 
+and customization projects free of charge.  
+
+Novorado specializes in custom software and hardware design
+and engineering services.
+======================================================================
+*/
+//
+// $Id: parkSetup.h,v 1.32 2012/03/26 16:36:31 dmi Exp $
+//
+
+#ifndef PARK_SETUP_H
+#define	PARK_SETUP_H
+
+#include	<QWidget>
+#include	<QDialog>
+#include	<map>
+#include	<novopark.h>
+#include	<QLabel>
+#include	<QDir>
+#include	<QTranslator>
+#include	"ParkingProtocol.h"
+#include	<set>
+#include	<map>
+
+#define	BIG_FONT QFont("Helvetica", 18/*, QFont::Bold*/)
+
+#define	FIRMWARE_PASSWORD "soprano"
+
+class QPaintEvent;
+class QPushButton;
+class QSpinBox;
+class QProgressDialog;
+class QFtp;
+class QBitArray;
+class QTableWidget;
+
+namespace Novorado {
+
+	// Declaration
+	namespace Devices {
+		class Firmware;
+		};
+
+	namespace Parking {
+
+	class Car;
+	class DeviceHead;
+	class Device;
+	class Settings;
+	class HeadsTab;
+
+	class HeadMark : public QWidget {
+		Q_OBJECT
+		QPoint m_loc;
+
+		bool m_flag_active;
+		Novorado::HeadLogicNumber m_num;
+
+		DeviceHead* m_head;
+
+		public:
+
+			HeadMark();
+			HeadMark(const HeadMark&);
+
+			void setLocation(const QPoint& p);
+			QPoint location() const;
+
+			Novorado::HeadLogicNumber number() const;
+			void setNumber(Novorado::HeadLogicNumber);
+
+			bool isLinked();
+			Novorado::LineId deviceId();
+			Novorado::HeadId headId();
+
+			void setHead(DeviceHead*);
+			DeviceHead* head();
+
+		signals:
+
+			void userSelected(HeadMark*);
+			void userCleared(HeadMark*);
+
+		public slots:
+			void mousePressEvent(QMouseEvent*);
+			void mouseDoubleClickEvent(QMouseEvent*);
+			void paintEvent(QPaintEvent*);
+		};
+
+	class Car: public QWidget {
+		Q_OBJECT
+
+		QImage carImage;
+		QRect m_rect;
+		QSize pixSize;
+
+		public:
+			Car(QWidget*);
+
+			std::map<Novorado::HeadId,HeadMark> m_marks;
+
+			QRect freeZone();
+
+		public slots:
+			void paintEvent(QPaintEvent*);
+			void resizeEvent(QResizeEvent*);
+		};
+
+	class DeviceHead : public QObject {
+		Q_OBJECT
+
+		Novorado::HeadId m_headId;
+
+		QPushButton* m_button;
+		QSpinBox* m_sb;
+		Device* papa;
+
+		bool m_mark;
+
+		public:
+			Novorado::HeadId id() const;
+			void setId(Novorado::HeadId);
+
+			DeviceHead();
+			DeviceHead(const DeviceHead&);
+
+			void setOwner(Device*);
+			Device* owner();
+
+			void setButton(QPushButton&);
+			QPushButton& button();
+
+			void setSpinBox(QSpinBox&);
+			QSpinBox& spinBox();
+
+			QPoint center() const;
+
+			bool isMarked() const;
+			void clearMark();
+
+		public slots:
+			void onButtonPressed();
+			void onShiftChanged(int);
+		};
+
+	class Device : public QWidget {
+		Q_OBJECT
+
+		std::map<Novorado::HeadId,DeviceHead> m_heads;
+
+		Novorado::LineId deviceId;
+
+		QPushButton* label;
+
+		HeadsTab* m_owner;
+
+		public:
+
+			std::set<DeviceHead*> getAllHeads();
+
+			DeviceHead* getDeviceHead(Novorado::HeadId);
+
+			void setId(Novorado::LineId);
+			Novorado::LineId id() const;
+			Device();
+			Device(const Device&);
+			void addHead(Novorado::HeadId);
+			QRect buttonRect();
+			void clearMarks();
+
+			DeviceHead* markedHead();
+
+			void setOwner(HeadsTab* h){m_owner=h;}
+			HeadsTab* owner() { return m_owner;}
+
+		public slots:
+			void labelClicked();
+			void deselect();
+
+		signals:
+			void userSelected(Device*);
+		};
+
+	class SoundsTab;
+	class HeadsTab;
+	class GUITab;
+	class WebCamTab;
+	class FirmwareUpdateTab;
+	class DiagnosticsTab;
+	class ThermoTab;
+
+	class SetupDialog: public QDialog {
+
+		Q_OBJECT
+
+		SoundsTab* sounds;
+		GUITab*  gui;
+		HeadsTab* heads;
+		WebCamTab* webcams;
+		DiagnosticsTab* diagnostics;
+		FirmwareUpdateTab* firmupdater;
+		ThermoTab* thermals;
+
+		Settings* m_settings_p;
+
+		void cleanHeadsSettings(Settings*);
+
+		static SetupDialog* pt_setuDialog;
+		static void setVisible(SetupDialog*);
+
+		public:
+
+			SetupDialog(
+				// The following two will be cleared
+				std::set<LineId>& m_unknown_devices,
+				std::map<LineId, std::set<HeadId> >& m_unknown_heads,
+				QWidget*,
+				Settings*);
+
+			~SetupDialog();
+
+			QTranslator& translator();
+
+			Parktronic& parktronic();
+
+			HeadsTab& headsTab();
+
+			// Make sure we have only one instance
+			static SetupDialog* visible();
+
+		public slots:
+			void onClearSettingsAndReboot();
+			void saveSettings();
+			void saveAndAccept();
+		};
+
+
+	class CoverLabel : public QWidget {
+		Q_OBJECT
+		std::map<Novorado::HeadId,HeadMark>* m_marks;
+
+		public:
+			CoverLabel(QWidget*);
+			void setMarks(std::map<Novorado::HeadId,HeadMark>*);
+			void drawLink(QPainter&,HeadMark&);
+
+		public slots:
+			void paintEvent(QPaintEvent*);
+		};
+
+	class TabSettings {
+		protected:
+			Settings* m_settings;
+		public:
+			TabSettings(Settings* s):m_settings(s){}
+		};
+
+	class HeadsTab : public QWidget, public TabSettings {
+		Q_OBJECT
+
+		std::map<Novorado::LineId,Device> m_devices;
+
+		Car* m_car;
+		CoverLabel* topLabel;
+		Device* m_selectedDevice;
+
+		void removeHeadReferences(DeviceHead*);
+
+		Parktronic& m_parktronic;
+
+		public:
+
+			HeadsTab(Parktronic&,QWidget*,Settings*);
+			~HeadsTab();
+
+			Device* selectedDevice();
+			HeadMark* getHeadMark(DeviceHead*);
+
+			DeviceHead* getDeviceHead(Novorado::LineId,Novorado::HeadId);
+
+			void updateTopLevel();
+
+			Parktronic& parktronic() { return m_parktronic; }
+
+		public slots:
+			void addHead(LineId,HeadId);
+			void resizeEvent(QResizeEvent*);
+			void onUserSelected(Device*);
+			void onHeadMarkSelected(HeadMark*);
+			void onHeadMarkCleared(HeadMark*);
+			void loadSettings();
+			void saveSettings();
+			void onHeadsShift(std::vector<unsigned char>);
+		};
+
+	class SoundsTab : public QWidget, public TabSettings  {
+		Q_OBJECT
+
+		void getFile(const QDir&,QLabel&);
+
+		Parktronic& m_parktronic;
+
+		public:
+
+			SoundsTab(Parktronic&,QWidget*,Settings*);
+			~SoundsTab();
+			void readSettings();
+			void saveSettings();
+
+		private slots:
+			void on_radioButton_Voice_clicked();
+			void on_radioButton_Beeps_clicked();
+			void buzzerFL(unsigned char f,unsigned char l,int);
+
+			void onFrequencyChanged(int);
+			void onLoudnessChanged(int);
+		};
+
+	class WebCamTab : public QWidget, public TabSettings  {
+		Q_OBJECT
+		QString videoSourceMRL;
+		std::list<std::string> getCaptureDevices();
+		public:
+
+			WebCamTab(QWidget*,Settings*);
+			~WebCamTab();
+			void readSettings();
+			void saveSettings();
+
+			int isVideoEnabled();
+
+		public slots:
+			void onStateChanged(int);
+		};
+
+	class DTDrive : public QObject {
+		Q_OBJECT
+		QString key;
+		DiagnosticsTab* owner;
+
+		public:
+			DTDrive(){ owner=NULL; }
+
+			// Nah!
+			DTDrive(const DTDrive&):QObject(NULL){}
+
+			void set(DiagnosticsTab*, const QString&);
+		public slots:
+			void callMe();
+		};
+
+	class DiagnosticsTab : public QWidget, public TabSettings  {
+		Q_OBJECT
+		std::map<QString,DTDrive> m_drives;
+		bool saveCompressedLog(const QString& fn);
+		QString generateFileName();
+
+		PtrHolder<QProgressDialog> prog;
+		PtrHolder<QFtp> ftp;
+		int put_command_id;
+
+		QString stateStr();
+
+		public:
+			DiagnosticsTab(QWidget*,Settings*);
+			~DiagnosticsTab();
+			void saveSettings();
+
+		public slots:
+
+			void refreshData();
+
+			void clearLog();
+			void sendToNovorado();
+			void askLogFileName();
+			void saveOnDrive(const QString&);
+
+			// ftp
+			void onDataTransferProgress ( qint64 done, qint64 total );
+			void onCommandFinished ( int id, bool error );
+			void onCommandStarted ( int id );
+			void onFtpStateChanged(int);
+			void onFtpDone(bool);
+		};
+
+	class ThermoTab: public QWidget {
+		Q_OBJECT
+		Parktronic& m_parktronic;
+		public:
+			ThermoTab(QWidget*w,Parktronic&);
+			virtual ~ThermoTab();
+			QTableWidget* table();
+		public slots:
+			void on_pushButton_thermo_clicked();
+		};
+
+	class FirmwareUpdateTab: public QWidget {
+		Q_OBJECT
+
+		Parktronic& m_parktronic;
+
+		PtrHolder<Novorado::Devices::Firmware> m_firmware;
+
+		public:
+			FirmwareUpdateTab(QWidget*,Parktronic&);
+			~FirmwareUpdateTab();
+
+			void syncDevice();
+
+			void fixFirmware();
+
+		public slots:
+			void on_pushButton_CheckConnection_clicked();
+			void on_pushButton_Ping_clicked();
+			void on_pushButton_Reboot_clicked();
+			void on_pushButton_Upload_clicked();
+			void onPing();
+			void progress(const QString&);
+			void onFirmwareUpdateFinished(bool);
+			void on_lineEdit_Password_returnPressed();
+		};
+
+	class GUITab : public QWidget, public TabSettings {
+		Q_OBJECT
+
+		QTranslator& m_translator;
+
+		public:
+			GUITab(QWidget*,QTranslator&, Settings*);
+			~GUITab();
+
+			void readSettings();
+			void saveSettings();
+
+		signals:
+
+			void clearSettingsAndReboot();
+
+		public slots:
+			void on_comboBox_SelectLanguage_activated(int);
+			void on_pushButton_imageFile_clicked();
+			void on_pushButton_clearSettings_clicked();
+		};
+	};
+};
+
+#endif//PARK_SETUP_H
+

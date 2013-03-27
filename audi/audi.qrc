@@ -1,0 +1,7 @@
+ <!DOCTYPE RCC><RCC version="1.0">
+ <qresource>
+    <file alias="audi.png">images/audi.png</file>
+	 <file alias="logo.gif">images/logo.gif</file>
+	<file>images/bsdark.png</file>
+ </qresource>
+ </RCC>

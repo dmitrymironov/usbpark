@@ -1,0 +1,182 @@
+/*
+----------------------------------------------------------------------
+CONTENTS of this file is private property of Novorado, LLC
+======================================================================
+Source Code is distributed for reference purposes only for Novorado customers.
+For other uses, please contact Novorado http://www.novorado.com
+
+You may use source code in your non-commercial and educational 
+and customization projects free of charge.  
+
+Novorado specializes in custom software and hardware design
+and engineering services.
+======================================================================
+*/
+
+#ifndef	AUDI_H
+#define	AUDI_H
+
+#include	<QWidget>
+#include	<QLabel>
+#include	<map>
+#include	<QSystemTrayIcon>
+#include	<novopark.h>
+#include	<map>
+#include	<set>
+#include	<QTimer>
+#include	<QTime>
+#include	<nbeep.h>
+
+namespace Novorado {
+
+	namespace Audi {
+
+		struct DataSector;
+
+		class Sector : public QLabel {
+
+			Q_OBJECT
+
+			double m_startAngle, m_spanAngle;
+
+			DataSector* m_data;
+
+			float lookup_radprc(int distcm);
+
+			void drawOnResize();
+
+			public:
+
+				enum Position {
+					FL, FLC, FRC, FR,
+					RL, RLC, RRC, RR
+					};
+
+				Position role();
+
+				int distancePerc;
+				QRect ellipseRect, shadowRect, sensRect;
+
+				int distanceToObstacle;
+
+				Sector(DataSector*,QWidget*);
+				virtual ~Sector();
+
+				void setBgColor(QColor);
+				void resizeEvent(QResizeEvent*);
+
+				void drawSensorCm(int);
+
+				void setAngle(double,double);
+
+				DataSector* data() { return m_data; }
+			};
+
+		struct DataSector {
+			Sector::Position pos;
+			int angle,span;
+			QPoint internal_radius; // percent
+			QPoint external_radius;
+
+			void get2point(QPoint loc, QRect car, QRect& pix, Sector& sens);
+			};
+
+		class Car : public QLabel {
+
+			Q_OBJECT
+
+			QSize	m_picsz;
+
+			double m_SpanAngle;
+
+			std::map<Sector::Position,DataSector*> m_secs;
+
+			float m_ar;
+
+			public:
+				Car(QWidget*);
+				virtual ~Car();
+				void placeInside(QSize);
+				void sizeSector(Sector&);
+				double angle() const { return m_SpanAngle; }
+				DataSector& data(Sector::Position p){ return *m_secs[p]; }
+				void init(float);
+				float aspectRatio() const { return m_ar; }
+			};
+
+		class Widget : public QWidget, public Novorado::ParktronicUpdateCallback {
+
+			Q_OBJECT
+
+			Car m_car;
+
+			std::map<Sector::Position,Sector*> m_sectors;
+
+			QSystemTrayIcon* m_tray;
+
+			std::string devVersion;
+			int hasDevVersion;
+			Novorado::Parktronic* m_park;
+
+			void loadHeads();
+			void initPark();
+
+			std::map<Novorado::LineId, std::map<Novorado::HeadId,Novorado::HeadLogicNumber> > m_ha;
+			std::map<Novorado::LineId, std::set<Novorado::HeadId> > m_unassigned_heads;
+			std::map<Novorado::LineId, Novorado::ParkingProtocol::PROTOCOLS> line_assignment;
+
+			int pa_hide_delay();
+			int pa_show_delay();
+			int m_hideDelay;
+			int m_showDelay;
+
+			QTime last_change;
+			QTimer pollTimer, showTimer, hideTimer;
+
+			Media::nBeep beep;
+
+			QLabel *m_front_dist, *m_rear_dist;
+			int m_minDistanceR, m_minDistanceF;
+
+			struct Flags{
+				bool neverHide: 1;
+				Flags(){
+					neverHide=0;
+					}
+				} flags;
+
+			int minDistance();
+
+			public :
+
+				void dualMonitorCheck();
+				void neverHide(){ flags.neverHide=1; }
+
+				// Basic initialization
+				Widget(QWidget* p=NULL);
+				virtual ~Widget();
+
+				// Drawing
+				void resizeEvent(QResizeEvent*);
+
+				virtual void onNewDevice(LineId){}
+				virtual void onNewHead(LineId,HeadId){}
+				virtual void onDistanceChange(LineId,const Pair&);
+				virtual void onStatusChange(STATUS, std::string msg);
+				virtual const char** onFirmwareMode() { return NULL; }
+
+			public slots:
+
+				void onTrayActivated(QSystemTrayIcon::ActivationReason);
+				void onDrawSensor(Sector::Position,int);
+				void poll();
+				void switchAspectRatio();
+
+			signals:
+
+				void drawSensor(Sector::Position,int);
+			};
+		}
+	};
+
+#endif // AUDI_H

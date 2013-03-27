@@ -1,0 +1,821 @@
+// $Id: parktronic.cpp,v 1.64 2012/03/26 16:36:31 dmi Exp $
+
+#include <stdio.h>
+#include <stdint.h>
+#include <math.h>
+#include <stdlib.h>
+
+#include <vlc/vlc.h>
+
+#include	<QApplication>
+#include	"PASettings.h"
+#include	"parkAssist.h"
+#include	<iostream>
+#include	<string>
+//#include	<LoadOnDemand.h>
+#include	<QThread>
+#include	<QDesktopWidget>
+#include	<QMutex>
+#include	<novover.h>
+#include	"VoiceNotification.h"
+#include	"VlcPlayer.h"
+
+using namespace Novorado::Media;
+
+#include	<stdexcept>
+#include	<QTextCodec>
+#include	<sstream>
+#include	<algorithm>
+#include	<QMessageBox>
+#include	<QTextCodec>
+
+#define	VIDEO_BUSY_LOOP_SEC	10
+//#define	CAM_SNAPSHOTS_MS	200
+
+#if	defined SYSTEM_IS_WIN32
+#include	<windows.h>
+#endif
+
+//
+// Global mutex for all VLC access in the program
+//
+QMutex m_vlcLibMutex;
+
+// Camera name & Video frame (more than one camera can be used)
+static std::map<QString, PtrHolder<VideoFrame> > cameraFrames;
+
+VideoFrame::VideoFrame()
+{
+	resetTime();
+	callCount = 0;
+	imageUpdated=false;
+
+}
+
+//#define VIDEOWIDTH 640
+//#define VIDEOHEIGHT 480
+
+#define VIDEOWIDTH 320
+#define VIDEOHEIGHT 240
+
+static void unlock(
+  void *data,
+  void*,//id,
+  void *const *)//p_pixels)
+{
+//	std::cout << "< " << std::flush;
+	VideoFrame* vf = static_cast<VideoFrame*>(data);
+
+	{
+	QMutexLocker lk(&vf->camImageLock);
+	vf->camImage=QImage((const uchar*)(vf->surf->pixels),VIDEOWIDTH,VIDEOHEIGHT,QImage::Format_RGB16);
+	//vf->camImage.save(QString("img/%1.PNG").arg(++icont),"PNG");
+	}
+
+	m_vlcLibMutex.unlock();
+
+	vf->imageUpdated=true;
+}
+
+static void* lock(void* data,void **pp_ret)
+{
+//	std::cout << ">" << std::flush;
+	VideoFrame* vf = static_cast<VideoFrame*>(data);
+
+	m_vlcLibMutex.lock();// caller expects it is locked, nothing
+
+//	if(!VideoFrame->mutex.tryLock()) return;
+
+	*pp_ret = vf->surf->pixels;
+
+	vf->callCount ++;
+	vf->lastCallTime = QTime::currentTime();
+
+//	std::cout << "." << std::flush;
+	return NULL; // *id
+}
+
+static void display(void *data, void * /*id*/)
+{
+	//std::cout << "X" << std::flush;
+	VideoFrame* vf = static_cast<VideoFrame*>(data);
+	vf->signalUp();
+
+    /* VLC wants to display the video */
+    //(void) data;
+    //if(id == NULL) throw std::logic_error("NULL id");
+}
+
+void WebCamThread::onVideoStop() {
+	if(!f_videoStarted) {
+		//throw std::logic_error("Video has not been started");
+		return;
+		}
+
+	emit requestedStop();
+	f_videoStarted=false;
+	}
+
+void WebCamThread::onVideoStart() {
+	if(f_videoStarted) throw std::logic_error("Video has been started already");
+
+	emit requestedStart();
+	f_videoStarted=true;
+	}
+
+WebCamThread::WebCamThread(Novorado::Parking::ParkAssist* pa,int argc, char* argv[])
+{
+	f_videoStarted=false;
+	parkAss=pa;
+	m_argc=argc;
+	m_argv=argv;
+
+	start(QThread::IdlePriority);
+}
+
+WebCamThread::~WebCamThread(){
+	quit();
+	wait(2500);
+	}
+
+VlcPlayer::~VlcPlayer()
+{
+	stop();
+}
+
+bool VlcPlayer::hasVideo() const
+{
+	return m_frame!=NULL;
+}
+
+VlcPlayer::VlcPlayer(Novorado::Parking::Settings* s, WebCamThread* t)
+{
+	if(!s) throw std::logic_error("Unitialized paramter (settings)");
+	if(!t) throw std::logic_error("Unitialized paramter (thread)");
+	m_settings=(s);
+	m_thread = t;
+	m_frame=NULL;
+	//f_noVideo=true;
+	done = false;
+}
+
+void Novorado::Parking::ParkAssist::buzzerFL(unsigned char f,unsigned char l, int fHz)
+{
+	emit gotBuzzerFL(f,l, fHz);
+}
+
+void Novorado::Parking::ParkAssist::headsShift(std::vector<unsigned char> v)
+{
+	emit gotHeadsShift(v);
+}
+
+void Novorado::Parking::ParkAssist::onNewDevice(Novorado::LineId lid)
+{
+	// Just register it here
+	m_settings->addDevice(lid);
+}
+
+void Novorado::Parking::ParkAssist::resizeEvent(QResizeEvent* e)
+{
+	QWidget::resizeEvent(e);
+
+	theConnectionBall.move(width()-theConnectionBall.width(),height()-theConnectionBall.height());
+
+	// Move SDL widget closer
+	QSize s=QApplication::desktop()->screen()->size();
+
+	QRect r(QPoint(rect().right(),rect().top()),QSize(s.width()-width(),s.height()-height()));
+
+	#define	PA_X_DIV	300
+	#define	PA_Y_MARGIN	10
+	m_webcamVideo.move(PA_X_DIV,PA_Y_MARGIN);
+	m_webcamVideo.resize(width()-PA_X_DIV-PA_Y_MARGIN,height()-2*PA_Y_MARGIN);
+
+	emit placeVideo(r);
+}
+
+//
+// It will be called from another thread
+//
+void WebCamThread::resize(const QRect& /*r*/)
+{
+}
+
+void VlcPlayer::stop()
+{
+	// Check if video has loaded
+	if(!hasVideo()) return;
+
+	disconnect(
+		videoFrame(), SIGNAL(haveImage(Novorado::Media::VideoFrame*)),
+		m_thread->owner(), SLOT(onWebCamUpdate(Novorado::Media::VideoFrame*))
+		);
+
+	// It will complain
+	//m_thread->owner()->onWebCamUpdate(m_frame, true);
+
+	/*
+	* Stop stream and clean up libVLC
+	*/
+	std::cout << "Stopping media player .." << std::endl;
+
+	libvlc_media_player_stop(mp);
+
+	QMutexLocker vlclk(&m_vlcLibMutex);
+	std::cout << "Video thread locked" << std::endl;
+
+	std::cout << "Releasing media player .." << std::endl;
+	libvlc_media_player_release(mp);
+	libvlc_release(libvlc);
+
+	std::cout << "Media access shut down" << std::endl;
+
+	m_frame=NULL;
+	mp=NULL;
+	libvlc=NULL;
+}
+
+SoundPlayer::SoundPlayer()
+{
+}
+
+SoundPlayer::~SoundPlayer()
+{
+}
+
+#ifndef SYSTEM_IS_WIN32
+#include "EST.h"
+#include "EST_unix.h"
+#include	<festival.h>
+
+void SoundPlayer::play(const std::string& _f)
+{
+	// Ugly "static" instead of member to suppress festival warnings
+	static std::map<std::string,EST_Wave> m_wave;
+	std::map<std::string,EST_Wave>::iterator i=m_wave.find(_f);
+	if ( i == m_wave.end() ) {
+		EST_Wave& w=m_wave[_f];
+		w.load(_f.c_str());
+		i=m_wave.find(_f);
+		}
+
+	EST_Option play_wave_options;
+ 	play_wave_options.add_item("-quality","HIGH");
+	play_wave(i->second,play_wave_options);
+
+	std::cout << "Playing wave " << _f << std::endl;
+
+	emit finishedPlaying();
+}
+#else
+// Windows Playsound
+void SoundPlayer::play(const std::string& _f)
+{
+	std::cout << "Playing wave " << _f << std::endl;
+
+	PlaySound(reinterpret_cast<const WCHAR *>(_f.c_str()),NULL,SND_FILENAME);
+
+	emit finishedPlaying();
+}
+#endif
+
+int VlcPlayer::init()
+{
+	std::cout << "Video init .. " << std::flush;
+	QMutexLocker vlclk(&m_vlcLibMutex);
+	std::cout << "thread locked, initializing" << std::endl;
+
+	mrl=m_settings->videoSourceMRL();
+
+	if(mrl=="fake://") {
+		// Unconfigured video. User don't want to use it
+		// because of unsupported camera or something
+		//f_noVideo=true;
+		m_frame=NULL;
+		std::cout << "User settings command not to use video" << std::endl;
+		return 0;
+		} else {
+			std::cout << "Video device: " << mrl.toAscii().constData() << std::endl;
+			}
+
+	if(cameraFrames.find(mrl)==cameraFrames.end()){
+
+		cameraFrames[mrl] = (m_frame = new VideoFrame);
+
+		} else m_frame = cameraFrames[mrl].get();
+
+	connect(
+		videoFrame(), SIGNAL(haveImage(Novorado::Media::VideoFrame*)),
+		m_thread->owner(), SLOT(onWebCamUpdate(Novorado::Media::VideoFrame*))
+		);
+
+	// From that point, we'll start constructing the video poller
+	//f_noVideo=false;
+
+	std::cout << "Starting video thread" << std::endl;
+
+//	QMutexLocker lk(&m_frame->mutex);
+
+//VMEM	char clock[64]="xxx", cunlock[64]="xxx", cdata[64]="xxx"; //, dshow_arg[64]="";
+//VMEM	char width[32]="xxx", height[32]="xxx", pitch[32]="xxx";
+
+	#if	defined MINGW
+	char plugins[MAX_PATH]="";
+
+	QString p=QDir::toNativeSeparators(QString(m_settings->videolanPath().c_str())+"/plugins");
+
+	sprintf(plugins,"%s",p.toAscii().constData());
+
+	std::cout << "Loading video plugins: \"" << plugins << "\"" << std::endl;
+
+	// Properly formatted dshow string
+	//  dshow:// :dshow-vdev="USB2.0 UVC 1.3M WebCam" :dshow-adev=none
+	std::string /*dshowOption="-vvv", */dshowVDev="-vvv",dshowSize="320x240";
+
+	if(mrl!="dshow://"){
+		//dshowOption=":dshow-vdev",
+		dshowVDev = mrl.toUtf8().constData();
+		std::cout << "Using special dshow video device \"" << dshowVDev.c_str() << "\"" << std::endl;
+		std::stringstream r;
+		r << VIDEOWIDTH << "x" << VIDEOHEIGHT;
+		dshowSize=r.str();
+		}
+	#endif
+
+	char const *vlc_argv[] =
+	{
+		"-q",
+	#if	defined PRINT_CALLS || defined NOVORADO_DEBUG
+		"-vvv",
+	#endif
+	#if	defined	MINGW
+		"--plugin-path", plugins,
+		"--dshow-adev", "none",
+		"--dshow-vdev",dshowVDev.c_str(),
+		"--dshow-size",dshowSize.c_str(),
+		"--language","en", // windows specific on moment of update
+	#else
+//		"--reset-plugins-cache",
+		"--noaudio",
+	#endif
+//		"--ignore-config", /* Don't use VLC's config files */
+//VMEM		"--vout", "vmem",
+//VMEM		"--vmem-width", width,
+//VMEM		"--vmem-height", height,
+//VMEM		"--vmem-pitch", pitch,
+//VMEM		"--vmem-chroma", "RV16",
+//VMEM		"--vmem-lock", clock,
+//VMEM		"--vmem-unlock", cunlock,
+//VMEM		"--vmem-data", cdata,
+	};
+
+	int vlc_argc = sizeof(vlc_argv) / sizeof(*vlc_argv);
+
+	/*
+	*  Initialise libVLC
+	*/
+//VMEM	sprintf(clock, "%lld", (long long int)(intptr_t)lock);
+//VMEM	sprintf(cunlock, "%lld", (long long int)(intptr_t)unlock);
+//VMEM	sprintf(cdata, "%lld", (long long int)(intptr_t)m_frame);
+//VMEM	sprintf(width, "%i", VIDEOWIDTH);
+//VMEM	sprintf(height, "%i", VIDEOHEIGHT);
+//VMEM	sprintf(pitch, "%i", VIDEOWIDTH * 2);
+
+	std::cout << "Initializing SDL" << std::endl;
+
+	// Has to be created before passing to libvlc
+	m_frame->surf = SDL_CreateRGBSurface(
+		SDL_SWSURFACE,
+		VIDEOWIDTH,
+		VIDEOHEIGHT,
+		16, 0x001f, 0x07e0, 0xf800, 0);
+
+	std::cout << "Creating new instance" << std::endl;
+
+	libvlc = libvlc_new(vlc_argc, vlc_argv);
+
+	std::cout << "Setting media" << std::endl;
+
+	#if	!defined	MINGW
+	m = libvlc_media_new_path(libvlc, mrl.toAscii().constData());
+	#else
+	m = libvlc_media_new_path(libvlc, "dshow://");
+	#endif
+
+	if(!m) {
+		std::cout << "Looks like camera is busy" << std::endl;
+		}
+
+	std::cout << "Starting media player" << std::endl;
+
+	mp = libvlc_media_player_new_from_media(m);
+
+	if(!mp) {
+		std::cout << "Unable to launch media player on selected media" << std::endl;
+		}
+
+	std::cout << "Releasing media" << std::endl;
+	libvlc_media_release(m);
+
+	std::cout << "Setting up video hook" << std::endl;
+	libvlc_video_set_callbacks(mp, lock, unlock, display, m_frame);
+    libvlc_video_set_format(mp, "RV16", VIDEOWIDTH, VIDEOHEIGHT, VIDEOWIDTH*2);
+
+	std::cout << "Initiated playback" << std::endl;
+	libvlc_media_player_play(mp);
+
+	std::cout << "Player initialization complete" << std::endl;
+	m_frame->resetTime();
+	return 0;
+}
+
+void Novorado::Parking::ParkAssist::enableBeeps()
+{
+	flags.soundBusy=false;
+}
+
+void Novorado::Parking::ParkAssist::onBeep() {
+	flags.soundBusy=true;
+// 	std::cout << " " << m_beepFile.c_str() << std::endl;
+	emit makeSound(m_beepFile);
+	}
+
+void Novorado::Parking::ParkAssist::startSound()
+{
+	setSoundNotificationMode(m_settings->soundNotification());
+}
+
+void Novorado::Parking::ParkAssist::setSoundNotificationMode(Novorado::Parking::ParkAssist::SOUND_NOTIFICATION_MODE snm)
+{
+	if(snm==SNM_VOICE){
+
+		m_settings->setSoundNotification(SNM_VOICE);
+
+		if(soundThread){
+
+			soundThread->quit();
+			soundThread->wait();
+
+			if(m_webcam) clearScreenAndStopVideo();
+
+			delete soundThread;
+			soundThread=NULL;
+			}
+
+
+		if(!voiceThread) {
+			voiceThread = new VoiceNotification(m_settings);
+			connect(this,SIGNAL(deviceDisconnected()),voiceThread,SLOT(onDeviceDisconnected()));
+			connect(this,SIGNAL(deviceConnected()),voiceThread,SLOT(onDeviceConnected()));
+			}
+
+		voiceThread->start();
+
+		return;
+		}
+
+	else if(snm==SNM_TONES){
+
+		m_settings->setSoundNotification(SNM_TONES);
+
+		if(voiceThread) {
+			voiceThread->suspendSignals();
+			}
+
+
+		QMutexLocker lk(&m_vlcLibMutex);
+		soundThread = new SoundThread(this);
+		soundThread->start();
+		soundThread->setPriority(QThread::LowestPriority);
+		return;
+		}
+
+	std::stringstream s;
+
+	s << "Unknown SNM code '" << snm << "' (voice - " << SNM_VOICE << ", tones - " << SNM_TONES << ")";
+
+	throw Novorado::LogicErrorException(s.str());
+}
+
+void Novorado::Parking::ParkAssist::muteSound(bool f){
+	flags.muteSound=f;
+
+	if(flags.muteSound){
+		if(voiceThread){
+			voiceThread->suspendSignals();
+			}
+		if(soundThread){
+			soundThread->quit();
+			soundThread->wait();
+			delete soundThread;
+			soundThread=NULL;
+			}
+
+		} else startSound();
+	}
+
+void Novorado::Parking::ParkAssist::openWebcam(int /*argc*/,char**/*argv*/)
+{
+	m_webcam->onVideoStart();
+}
+
+
+void Novorado::Parking::ParkAssist::clearScreenAndStopVideo()
+{
+	// Clear the pixmap
+	QPixmap blackThing(m_webcamVideo.size());
+	blackThing.fill(Qt::black);
+	m_webcamVideo.setPixmap(blackThing);
+
+	m_webcam->onVideoStop();
+}
+
+Novorado::Parking::ParkAssist::~ParkAssist()
+{
+	// We have to clear it explicitly, otherwise automatic destruction
+	// chain will cause concurrent situation that is not easy to
+	// rule out by using mutexing
+	if(m_parktronic) m_parktronic.clear();
+	// and only after that ..
+	if(m_settings) m_settings.clear();
+
+	#if	0
+	if(webcam) {
+		webcam->wait();
+		delete webcam;
+		webcam=NULL;
+		}
+	#endif
+}
+
+SoundThread::SoundThread(Novorado::Parking::ParkAssist* pa)
+{
+	parkAss=pa;
+	dude=NULL;
+}
+
+SoundThread::~SoundThread()
+{
+	if(dude) {
+		delete dude;
+		dude=NULL;
+		}
+}
+
+
+void SoundThread::run()
+{
+	if(dude!=NULL) throw Novorado::LogicErrorException("SoundThread::run() - sound player already initialized");
+	dude = new SoundPlayer();
+
+	connect(
+		this, SIGNAL(makeSound(const std::string&)),
+		dude, SLOT(play(const std::string&))
+		);
+
+	connect(
+		dude,SIGNAL(finishedPlaying()),
+		parkAss, SLOT(enableBeeps())
+		);
+
+	connect(
+		parkAss, SIGNAL(makeSound(const std::string&)),
+		dude, SLOT(play(const std::string&))
+		);
+
+	exec();
+
+	delete dude;
+	dude=NULL;
+}
+
+void SoundThread::play(const std::string& f)
+{
+#if	0
+	if(f.length()<7 || f.substr(7)!="file://") emit makeSound("file://"+f);
+	else emit makeSound(f);
+#else
+	emit makeSound(f);
+#endif
+}
+
+int VideoFrame::idleTime()
+{
+	return lastCallTime.msecsTo(QTime::currentTime());
+}
+
+void WebCamThread::run()
+{
+	VlcPlayer vp(parkAss->settings(),this);
+
+	connect(parkAss,SIGNAL(placeVideo(const QRect&)),this,SLOT(resize(const QRect&)));
+
+	connect(this,SIGNAL(requestedStart()),&vp,SLOT(init()),Qt::QueuedConnection);
+	connect(this,SIGNAL(requestedStop()),&vp,SLOT(stop()),Qt::QueuedConnection);
+
+	// It is going to be event driven than
+	exec();
+}
+
+#include	<stdio.h>
+
+class PrintTimeStampAndCatchIO {
+	std::string t(){
+		return QTime::currentTime().toString().toAscii().constData();
+		}
+	std::string d(){
+		return QDate::currentDate().toString("dd.MM.yyyy").toAscii().constData();
+		}
+
+	public:
+
+		PrintTimeStampAndCatchIO(){
+			Novorado::Parking::Settings s;
+			start(&s);
+			}
+
+		void start(Novorado::Parking::Settings* s){
+
+			if(s->logUSB()){
+				putenv("USB_DEBUG=10");
+				}
+
+			std::string fn = s->logFileName().toUtf8().constData();
+
+			std::cout << "Log to console:" << (s->logToConsoleOnly()?fn.c_str():"no") << std::endl;
+
+			if(!s->logToConsoleOnly() && s->logToFile()) {
+
+				std::cout << "Writing log to " << fn << std::endl;
+
+				bool cl=s->cleanLog();
+
+				// Nop, we're not gonna clean it
+				// policy has changed - user has to unselect if(cl) s->setCleanLog(false);
+
+				FILE *flog = freopen(fn.c_str(),cl?"w":"a",stdout);
+				fclose(stderr);
+				*stderr = *flog;
+				}
+
+			std::cout << "====================== APPLICATION STARTED: " << d() << " " << t() << std::endl;
+			}
+		~PrintTimeStampAndCatchIO(){
+			std::cout << "======================== APPLICATION ENDED: " << d() << " " << t() << std::endl;
+
+			fflush(stdout);
+			fflush(stderr);
+			}
+	};
+
+void lower_char(char& c)
+{
+	c=::tolower(c);
+}
+
+void removeInitialMinus(std::string& s)
+{
+	while(s.length() && s[0]=='-') s.erase(0,1);
+	std::for_each(s.begin(),s.end(),lower_char);
+}
+
+using namespace Novorado;
+
+std::string parkAssistVersion;
+
+int main(int argc, char* argv[])
+{
+	std::list<std::string> largs;
+	std::copy(argv,argv+(argc),std::back_inserter(largs));
+
+	std::for_each(largs.begin(),largs.end(),removeInitialMinus);
+
+	std::list<std::string>::iterator l;
+
+	//bool flagConfig = (std::find(largs.begin(),largs.end(),"config")!=largs.end());
+
+	if((l=std::find(largs.begin(),largs.end(),"unzip"))!=largs.end()){
+
+		l++;
+
+		QString inFileName(l->c_str());
+
+		std::cout << "Reading " << inFileName.toAscii().constData() << std::endl;
+
+		if(!QFileInfo(inFileName).size()) {
+			std::cerr << "Wrong file name, or permissions!" << std::endl;
+			return 3;
+			}
+
+		QFile f(inFileName);
+		f.open(QIODevice::ReadOnly);
+		QByteArray in=f.readAll();
+		f.close();
+
+		QByteArray ba = qUncompress(in);
+
+		QFileInfo fi(inFileName);
+		QString on=fi.baseName()+".txt";
+
+		QFile of(on);
+		of.open(QIODevice::WriteOnly | QIODevice::Text);
+		of.write(ba);
+		of.close();
+
+		std::cout << "Data from " << inFileName.toAscii().constData() << " (size " << QFileInfo(inFileName).size() << "b) was unzipped to "
+			<< on.toAscii().constData()
+			<< " (uncompressed size " << QFileInfo(on).size() << "b)"
+			<< std::endl;
+		return 1;
+		}
+
+	int retVal=0;
+	std::string retMessage;
+
+	try {
+
+//  	QTextCodec::setCodecForCStrings(QTextCodec::codecForName("UTF-8"));
+	do {
+
+		PtrHolder<PrintTimeStampAndCatchIO> pts;
+		bool flagPrintVersionAndExit=(std::find(largs.begin(),largs.end(),"version")!=largs.end());
+
+		if(!flagPrintVersionAndExit){
+			pts = (new PrintTimeStampAndCatchIO);
+			}
+
+		Novorado::Version ver("parker",MAJOR_VERSION,MINOR_VERSION,PATCH_VERSION);
+		ver.cmdline(argc,argv);
+
+		if((l=std::find(largs.begin(),largs.end(),"--noupdate"))==largs.end()){
+			if(ver.hasUpdate(argv[0],"Parking Assistant")){
+				// that will restart the process
+				ver.update();
+				}
+			}
+
+
+		// initialize version
+		parkAssistVersion=ver.getVersion();
+
+		QApplication app(argc, argv);
+
+		char const *x[] = {"parker", "parkerD", "audi", "audiD", "oodd", "ooddD","loganalyz","loganalyzD"};
+		std::set<std::string> apps(x, x + sizeof(x) / sizeof(*x));
+
+		if(Novorado::Process::count(apps)>1) throw std::logic_error(
+			QObject::tr("Another copy of application is already running")
+				.toUtf8().constData());
+
+		qRegisterMetaType < std::string > ( "std::string" );
+		qRegisterMetaType < LineId > ( "LineId" );
+		qRegisterMetaType < HeadId > ( "HeadId" );
+		qRegisterMetaType < SpeechSynth::SST_LANG > ( "SpeechSynth::SST_LANG" );
+		qRegisterMetaType < Novorado::HeadLogicNumber > ("Novorado::HeadLogicNumber" );
+		qRegisterMetaType < Novorado::DistanceCM > ("Novorado::DistanceCM" );
+		qRegisterMetaType < std::vector<unsigned char> > ("std::vector<unsigned char>");
+
+		Novorado::Parking::ParkAssist p(argc,argv);
+
+	//	pts.start(p.settings());
+		p.setWindowTitle((std::string("Parking Assistant")/*+parkAssistVersion*/).c_str());
+
+		app.setActiveWindow(&p);
+
+		retVal=app.exec();
+
+		std::cout << "Application exited (" << retVal << ")" << std::endl;
+
+	} while(retVal==APP_RELOAD_CODE);
+
+	return retVal;
+
+	} catch ( const Novorado::LogicErrorException& err){
+		retMessage = "Application failed: ";
+		retMessage += err.what();
+		std::cerr <<  retMessage  << std::endl;
+		retVal=1;
+		}
+
+	catch ( const std::logic_error& err) {
+		retMessage = "Application failed with logic error: ";
+		retMessage += err.what();
+		std::cerr << retMessage << std::endl;
+		retVal= 3;
+		}
+
+	catch ( ... ) {
+		retMessage ="Application failed: unknown exception thrown" ;
+		std::cerr << "Application failed: unknown exception thrown"  << std::endl;
+		retVal=2;
+		}
+
+	if(retVal){
+		QApplication errorApp(argc,argv);
+		// Error happened
+		QMessageBox::critical(NULL, "Parktronic Application",
+                                retMessage.c_str());
+		}
+
+	return retVal;
+}

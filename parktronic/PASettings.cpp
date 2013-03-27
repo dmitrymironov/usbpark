@@ -1,0 +1,724 @@
+/*
+----------------------------------------------------------------------
+CONTENTS of this file is private property of Novorado, LLC
+======================================================================
+Source Code is distributed for reference purposes only for Novorado 
+customers. For other uses, please contact Novorado 
+http://www.novorado.com or on our facebook/twitter page
+
+You may use source code in your non-commercial and educational 
+and customization projects free of charge.  
+
+Novorado specializes in custom software and hardware design
+and engineering services.
+======================================================================
+*/
+#include	<QTranslator>
+#include	"PASettings.h"
+#include	<QDir>
+#include	<iostream>
+#include	<QMessageBox>
+#include	<QString>
+#include	<QApplication>
+#include	<novopark.h>
+#include	<parkAssist.h>
+#include	<sstream>
+
+using namespace Novorado::Parking;
+
+std::string Settings::soundPath() const {
+	return m_soundPath;
+	}
+
+std::string Settings::installPath() const {
+	return instDir().absolutePath().toAscii().constData();
+	}
+
+std::string Settings::videolanPath() const {
+	return videolanDir().absolutePath().toAscii().constData();
+	}
+
+
+std::map<Novorado::LineId, std::set<Novorado::HeadId> > Settings::getUnassignedHeads() const {
+	return m_unassigned_heads;
+	}
+
+int Settings::getConfigWidth()
+{
+	m_settings.beginGroup("gui");
+	int rv = m_settings.value("configScreenWidth","400").toInt();
+	m_settings.endGroup();
+	return rv;
+}
+
+int Settings::getConfigHeight()
+{
+	m_settings.beginGroup("gui");
+	int rv = m_settings.value("configScreenHeight","400").toInt();
+	m_settings.endGroup();
+	return rv;
+}
+
+void Settings::load()
+{
+
+	// Get the installation directory here
+
+//	std::cout << "Loading m_settings" << std::endl;
+//	std::cout << "Install dir is:\t\"" << m_settings.value("Install_Dir").toString().toAscii().constData() << "\"" << std::endl;
+
+//
+// Sound m_settings
+//
+
+	ssInstDir = instDir().absolutePath().toAscii().constData();
+
+	load_language();
+	load_heads_assignment();
+	load_delays();
+	load_sounds();
+}
+
+QDir Settings::videolanDir() const
+{
+#if	defined MINGW
+	QSettings s(
+		"HKEY_LOCAL_MACHINE\\SOFTWARE\\VideoLAN\\VLC",
+		QSettings::NativeFormat
+		);
+
+	return QDir(QDir::toNativeSeparators(s.value("InstallDir","C:\\Program\ Files\\VideoLAN\\VLC\\plugins").toString()));
+#else
+	return QDir(QDir::toNativeSeparators(m_settings.value("Install_Dir","/usr/share/novorado").toString()));
+#endif
+}
+
+QDir Settings::instDir() const
+{
+#if	defined MINGW
+	return QDir(QDir::toNativeSeparators(m_settings.value("Install_Dir","C:\\Program Files\\Novorado\\Parking Assistant").toString()));
+#else
+	return QDir(QDir::toNativeSeparators(m_settings.value("Install_Dir","/usr/share/novorado").toString()));
+#endif
+}
+
+void Settings::load_language()
+{
+	QSettings set("Novorado","Sections");
+	QFileInfo fi(set.value("Parking Assistant",QString((const char*)(getenv("PROGRAMFILES"))) +  "\\Novorado\\Parking Assistant\\").toString()+"parktronic_ru.qm");
+
+	m_settings.beginGroup("gui");
+	QString s=m_settings.value("language","english").toString();
+
+	std::cout << "UI Language '" << s.toAscii().constData() << "'" << std::endl;
+
+	if(s=="russian"){
+		/*
+		// current dir
+		if(!m_translator.load("parktronic_ru")){
+
+			std::cout << "Unable to load translation files from \""
+				<< QDir::currentPath().toAscii().constData() << "\"" << std::endl;
+
+				// upper level dir
+				if(!m_translator.load("parktronic_ru","..")){
+					std::cout << "Unable to load translation files from \""
+						<< QDir("..").absolutePath().toAscii().constData() << "\"" << std::endl;
+
+					// upper level and parktronic dir
+					if(!m_translator.load("parktronic_ru","../parktronic")) {
+						std::cout << "Unable to load translation files from \""
+							<< QDir("../parktronic").absolutePath().toAscii().constData() << "\"" << std::endl;
+
+						// installation dir
+						if(	!m_translator.load("parktronic_ru",instDir().absolutePath())) {
+							std::cout << "Unable to load translation files from \"" << instDir().absolutePath().toAscii().constData() << "\"" << std::endl;
+
+							QString
+								head = QObject::tr("Unable to load Russian translation"),
+								msg = QObject::tr("No parktronic_ru.qm file found");
+
+							std::cerr << msg.toAscii().constData() << std::endl;
+							// -- QMessageBox::warning(NULL,head,msg);
+							} else std::cout << "Loaded translation from " << instDir().absolutePath().toAscii().constData() << std::endl;
+						} else std::cout << "Loaded translation from ../parktronic" << std::endl;
+					} else std::cout << "Loaded translation from .." << std::endl;
+				} else std::cout << "Loaded translation from " << QDir::currentPath().toAscii().constData() << std::endl;
+		*/
+
+		if(!m_translator.load(fi.absoluteFilePath())){
+			QString
+				head = QObject::tr("Unable to load Russian translation"),
+				msg = "No "  + fi.absoluteFilePath() + " file found";
+
+			std::cerr << msg.toAscii().constData() << std::endl;
+			QMessageBox::warning(NULL,head,msg);
+			}
+
+		m_language=s.toAscii().constData();
+		}
+
+	std::cout << "Loading application translation service" << std::endl;
+	qApp->installTranslator(&m_translator);
+	m_settings.endGroup();
+}
+
+Settings::Settings():m_translator(this),m_settings("Novorado","ParkingAssistant")
+{
+	f_LogicNumbersLoaded = false;
+	m_pasnm = ParkAssist::SNM_UNKNOWN;
+	m_showDelay=2;
+	m_hideDelay=5;
+}
+
+void Settings::clearHeadsAssignementFromConfigurationFile()
+{
+	// Clear heads assignment from the configuration file
+	QStringList groups=m_settings.childGroups();
+	for(int g=0;g<groups.size();g++){
+
+		QString grp=groups[g];
+
+		if(grp.left(6)=="Device"){
+			m_settings.beginGroup(grp);
+			m_settings.remove("");
+			m_settings.endGroup();
+			}
+		}
+}
+
+void Settings::clear()
+{
+	m_settings.clear();
+	m_settings.sync();
+}
+
+bool Settings::hasLine(Novorado::LineId lid)
+{
+	ThreadLock _l;
+	return m_ha.find(lid)!=m_ha.end();
+}
+
+std::map<Novorado::HeadId,Novorado::HeadLogicNumber> Settings::getHeads(Novorado::LineId lid)
+{
+	ThreadLock _l;
+
+	std::map<Novorado::LineId, std::map<Novorado::HeadId,Novorado::HeadLogicNumber> >::iterator i=m_ha.find(lid);
+
+	if(i==m_ha.end()) throw std::logic_error("Call hasLine first");
+
+	return i->second;
+}
+
+bool Settings::hasHead(Novorado::LineId lid,Novorado::HeadId hid)
+{
+	ThreadLock _l;
+
+	std::map<Novorado::LineId, std::map<Novorado::HeadId,Novorado::HeadLogicNumber> >::iterator i=m_ha.find(lid);
+
+	if(i==m_ha.end()) throw std::logic_error("Call hasLine first");
+
+	return i->second.find(hid)!=i->second.end();
+}
+
+std::list<Novorado::HeadLogicNumber> Settings::getHeadNumbers(Novorado::LineId lid)
+{
+	std::list<Novorado::HeadLogicNumber> rv;
+
+	ThreadLock _l;
+
+	std::map<Novorado::LineId, std::map<Novorado::HeadId,Novorado::HeadLogicNumber> >::iterator i=m_ha.find(lid);
+
+	if(i==m_ha.end()) return rv; // line is not found
+
+	std::map<Novorado::HeadId,Novorado::HeadLogicNumber>& heads = i->second;
+
+	for(std::map<Novorado::HeadId,Novorado::HeadLogicNumber>::iterator j=heads.begin();
+		j!=heads.end();j++){
+
+		rv.push_back(j->second);
+		}
+
+	return rv;
+}
+
+Novorado::HeadLogicNumber Settings::getHeadNumber(Novorado::LineId lid,Novorado::HeadId hid)
+{
+	ThreadLock _l;
+
+	std::map<Novorado::LineId, std::map<Novorado::HeadId,Novorado::HeadLogicNumber> >::iterator i=m_ha.find(lid);
+
+	if(i==m_ha.end()) throw std::logic_error("Call hasLine first");
+
+	std::map<Novorado::HeadId,Novorado::HeadLogicNumber>::iterator j=i->second.find(hid);
+
+	if(j==i->second.end()) throw std::logic_error("Call hasHead first");
+
+	return j->second;
+}
+
+void Settings::clearHeadAssisgnments()
+{
+	f_LogicNumbersLoaded=false;
+
+	ThreadLock _l;
+
+	m_ha.clear();
+	clearHeadsAssignementFromConfigurationFile();
+}
+
+void Settings::assignLogicHead(Novorado::LineId lid,Novorado::HeadId hid,HeadLogicNumber hln)
+{
+	ThreadLock _l;
+	m_ha[lid][hid]=hln;
+}
+
+void Settings::addDevice(Novorado::LineId lid)
+{
+	ThreadLock _l;
+
+	m_ha[lid];
+}
+
+std::map<Novorado::LineId, std::map<Novorado::HeadId,Novorado::HeadLogicNumber> >	Settings::heads() const
+{
+	ThreadLock _l;
+
+	return m_ha;
+}
+
+// Argument is the block list
+void Settings::saveDevices(std::map<Novorado::LineId, std::set<Novorado::HeadId> >& bl)
+{
+	clearHeadsAssignementFromConfigurationFile();
+
+	// Copy it to make sure no concurrent access has happen. Also, minimize blocked time
+	std::map<Novorado::LineId, std::map<Novorado::HeadId,Novorado::HeadLogicNumber> > h=heads();
+
+	for(std::map<Novorado::LineId, std::map<Novorado::HeadId,Novorado::HeadLogicNumber> >::iterator
+		i=h.begin();
+		i!=h.end();
+		i++){
+
+		Novorado::LineId lineId = i->first;
+		std::map<Novorado::HeadId,Novorado::HeadLogicNumber>& a = i->second;
+
+		std::stringstream ss;
+		ss << "Device";
+		ss << lineId;
+
+		m_settings.beginGroup(ss.str().c_str());
+
+		{
+		std::set<Novorado::HeadId>& blockedHeads=bl[lineId];
+		for(std::set<Novorado::HeadId>::iterator i=blockedHeads.begin();i!=blockedHeads.end();i++){
+			std::stringstream kk;
+			kk << "HeadId";
+			kk << (int)(*i);
+			m_settings.setValue(kk.str().c_str(),"disabled");
+			}
+		}
+
+		// Logic line assignment
+		for(std::map<Novorado::HeadId,Novorado::HeadLogicNumber>::iterator j=a.begin();j!=a.end();j++){
+			Novorado::HeadId headId =j->first;
+			Novorado::HeadLogicNumber logicHead=j->second;
+			std::stringstream kk;
+			kk << "LogicHead";
+			if(logicHead<=0 || logicHead>8) throw
+				std::logic_error("Settings::saveDevices(): uninitialized value used");
+
+			kk << (int)(logicHead);
+			m_settings.setValue(kk.str().c_str(),headId);
+			}
+
+		m_settings.endGroup();
+		}
+}
+
+void Settings::setLang(const std::string& l)
+{
+	m_language = l;
+	m_settings.beginGroup("gui");
+	m_settings.setValue("language",l.c_str());
+	m_settings.endGroup();
+}
+
+void Settings::removeDevices()
+{
+	ThreadLock _l;
+	m_ha.clear();
+	m_unassigned_heads.clear();
+	clearHeadsAssignementFromConfigurationFile();
+}
+
+Settings::ThreadLock::ThreadLock()
+{
+}
+
+Settings::~Settings()
+{
+	m_settings.sync();
+}
+
+Settings::ThreadLock::~ThreadLock()
+{
+}
+
+void Settings::load_heads_assignment()
+{
+	f_LogicNumbersLoaded=false;
+
+//
+// Device head assosiation
+//
+	ThreadLock _l;
+
+	m_ha.clear();
+	QStringList groups=m_settings.childGroups();
+
+	for(int g=0;g<groups.size();g++){
+
+		QString grp=groups[g];
+		if(grp.left(6)=="Device"){
+
+			m_settings.beginGroup(grp);
+
+			// Get the device id
+			grp=grp.right(grp.size()-6);
+			Novorado::LineId deviceId=grp.toInt();
+
+			// Look for all the logic head connected to that device
+			QStringList keys=m_settings.allKeys();
+			for(int k=0;k<keys.size();k++) {
+				QString key=keys[k];
+
+				// spot Novorado::HeadId<x>=disabled
+				QString l=key.left(6);
+
+				if(l=="Novorado::HeadId"){
+
+					QString v=m_settings.value(key).toString();
+
+					l=key.right(key.size()-6);
+					Novorado::HeadId headId=l.toInt();
+
+					// Check if value is "disabled"
+					if(v=="disabled"){
+						m_unassigned_heads[deviceId].insert(headId);
+/*						std::cout
+							<< "Disabled head - DeviceId=" << deviceId
+							<< ", Novorado::HeadId=" << Novorado::HeadId << std::endl;*/
+						}
+
+					continue;
+					}
+
+				// it's probably an assignment than
+				l = key.left(9);
+				if(l!="LogicHead") continue;
+
+				l=key.right(key.size()-9);
+
+				HeadLogicNumber num = l.toInt();
+
+				if(num<=0 || num>8){
+					std::stringstream ss;
+					ss << "Load heads assignment: value " << num
+						<< " is out of range";
+					throw std::logic_error(ss.str());
+					}
+
+				Novorado::HeadId hid = m_settings.value(key).toInt();
+
+				m_ha[deviceId][hid]=num;
+				m_sensors[num-1].visible=true;
+				}
+
+			m_settings.endGroup();
+			}
+		}
+
+	f_LogicNumbersLoaded=true;
+}
+
+void Settings::setHideDelay(int v)
+{
+	m_hideDelay=v;
+	m_settings.beginGroup("gui");
+	m_settings.setValue("AutoHideDelay",v);
+	m_settings.endGroup();
+}
+
+void Settings::setShowDelay(int v)
+{
+	m_showDelay=v;
+	m_settings.beginGroup("gui");
+	m_settings.setValue("ShowDelay",v);
+	m_settings.endGroup();
+}
+
+std::map<Novorado::LineId, Novorado::ParkingProtocol::PROTOCOLS> Settings::getLineAssignment()
+{
+	std::map<Novorado::LineId, ParkingProtocol::PROTOCOLS> rv;
+	QStringList groups=m_settings.childGroups();
+
+	for(int g=0;g<groups.size();g++){
+
+		QString grp=groups[g];
+		if(grp.left(6)=="Device"){
+
+			m_settings.beginGroup(grp);
+
+			// Get the device id
+			grp=grp.right(grp.size()-6);
+			Novorado::LineId lineId=grp.toInt();
+
+			rv[lineId]=(ParkingProtocol::PROTOCOLS)(m_settings.value("Protocol",ParkingProtocol::CHALLENGER_26).toInt());
+
+			m_settings.endGroup();
+			}
+		}
+
+	return rv;
+}
+
+void Settings::setLineAssignment(std::map<Novorado::LineId, ParkingProtocol::PROTOCOLS>& p)
+{
+	for(std::map<Novorado::LineId, ParkingProtocol::PROTOCOLS>::iterator i=p.begin();i!=p.end();i++) {
+		std::stringstream ss;
+		ss << "Device" << i->first;
+		m_settings.beginGroup(ss.str().c_str());
+		m_settings.setValue("Protocol",i->second);
+		m_settings.endGroup();
+		}
+}
+
+void Settings::setSoundNotification(ParkAssist::SOUND_NOTIFICATION_MODE snm)
+{
+	if(snm==m_pasnm) return;
+
+	m_pasnm=snm;
+	std::string s =(snm==ParkAssist::SNM_VOICE?"voice":"tones");
+	m_settings.beginGroup("gui");
+	m_settings.setValue("notification",s.c_str());
+	m_settings.endGroup();
+}
+
+ParkAssist::SOUND_NOTIFICATION_MODE Settings::soundNotification()
+{
+	if(m_pasnm!=ParkAssist::SNM_UNKNOWN) return m_pasnm;
+
+	m_settings.beginGroup("gui");
+	std::string m_snm=m_settings.value("notification","tones").toString().toAscii().constData();
+	m_settings.endGroup();
+
+	return m_pasnm=(m_snm=="voice"?ParkAssist::SNM_VOICE:ParkAssist::SNM_TONES);
+}
+
+void Settings::load_delays()
+{
+	m_settings.beginGroup("gui");
+
+	m_showDelay=m_settings.value("ShowDelay","2").toInt();
+	m_hideDelay=m_settings.value("AutoHideDelay","5").toInt();
+
+	m_settings.endGroup();
+}
+
+void Settings::load_sounds()
+{
+	m_settings.beginGroup("sounds");
+
+	m_settings.endGroup();
+}
+
+void Settings::setNotification(const QString& v)
+{
+	m_settings.beginGroup("gui");
+	m_settings.setValue("notification",v);
+	m_settings.endGroup();
+}
+
+void Settings::load_webcam()
+{
+	m_settings.beginGroup("webcam");
+	m_videoEnabled=m_settings.value("VideoEnabled",0).toInt();
+#if	!defined(SYSTEM_IS_WIN32)
+	m_videoSourceMRL=m_settings.value("VideoSource","v4l2://").toString();
+#else
+	m_videoSourceMRL=m_settings.value("VideoSource","dshow://").toString();
+#endif
+	m_settings.endGroup();
+}
+
+void Settings::setVideoEnabled(bool torf=true)
+{
+	m_videoEnabled=torf;
+	m_settings.beginGroup("webcam");
+	m_settings.setValue("VideoEnabled",m_videoEnabled);
+	m_settings.endGroup();
+}
+
+void Settings::setVideoSourceMRL(const QString& v)
+{
+	m_videoSourceMRL=v;
+	m_settings.beginGroup("webcam");
+	m_settings.setValue("VideoSource",v);
+	m_settings.endGroup();
+}
+
+QString Settings::bgImageFilePath()
+{
+	m_settings.beginGroup("gui");
+	QString rv=m_settings.value("BackgroundImage","default").toString();
+	m_settings.endGroup();
+	return rv;
+}
+
+void Settings::setBgImageFilePath(const QString& s)
+{
+	m_settings.beginGroup("gui");
+	m_settings.setValue("BackgroundImage",s);
+	m_settings.endGroup();
+}
+
+bool Settings::videoEnabled()
+{
+	bool rv=true;
+	m_settings.beginGroup("webcam");
+	rv=m_settings.value("VideoEnabled","false").toBool();
+	m_settings.endGroup();
+	return rv;
+}
+
+QString Settings::videoSourceMRL()
+{
+	QString rv="fake://";
+	m_settings.beginGroup("webcam");
+	#if	defined	MINGW
+	rv=m_settings.value("VideoSource","dshow://").toString();
+	#else
+	rv=m_settings.value("VideoSource","v4l2://").toString();
+	#endif
+	m_settings.endGroup();
+
+	return rv;
+}
+
+
+std::string Settings::speechPath() const
+{
+#if defined MINGW
+	QSettings s(
+		"HKEY_CURRENT_USER\\Software\\Novorado\\Languages",
+		QSettings::NativeFormat
+		);
+
+	QDir d(QDir::toNativeSeparators(s.value("Install_Dir","C:\\Program\ Files\\Novorado\\Languages").toString()));
+
+	std::string m_speechPath = (const char*)(d.absolutePath().toUtf8().constData());
+
+	return m_speechPath;
+#else
+	return NVSPEECH_PATH;
+//	std::cout << "Loading LINUX version from \"" << festival_libdir << "\"" << std::endl;
+#endif
+}
+
+bool Settings::logUSB()
+{
+	bool rv=false;
+	m_settings.beginGroup("Diagnostics");
+	rv=m_settings.value("USBMessagesLog",false).toBool();
+	m_settings.endGroup();
+	return rv;
+}
+
+void Settings::setLogUSB(bool f)
+{
+	m_settings.beginGroup("Diagnostics");
+	m_settings.setValue("USBMessagesLog",f);
+	m_settings.endGroup();
+}
+
+bool Settings::applicationDebugMessages()
+{
+	bool rv=false;
+	m_settings.beginGroup("Diagnostics");
+	rv=m_settings.value("ApplicationDebugMessages",false).toBool();
+	m_settings.endGroup();
+	return rv;
+}
+
+void Settings::setApplicationDebugMessages(bool f)
+{
+	m_settings.beginGroup("Diagnostics");
+	m_settings.setValue("ApplicationDebugMessages",f);
+	m_settings.endGroup();
+}
+
+bool Settings::logToConsoleOnly()
+{
+	bool rv=false;
+	m_settings.beginGroup("Diagnostics");
+	rv=m_settings.value("LogToConsoleOnly",false).toBool();
+	m_settings.endGroup();
+	return rv;
+}
+
+void Settings::setLogToConsoleOnly(bool f)
+{
+	m_settings.beginGroup("Diagnostics");
+	m_settings.setValue("LogToConsoleOnly",f);
+	m_settings.endGroup();
+}
+
+bool Settings::logToFile()
+{
+	bool rv=false;
+	m_settings.beginGroup("Diagnostics");
+	rv=m_settings.value("LogToFile",false).toBool();
+	m_settings.endGroup();
+	return rv;
+}
+
+void Settings::setLogToFile(bool f)
+{
+	m_settings.beginGroup("Diagnostics");
+	m_settings.setValue("LogToFile",f);
+	m_settings.endGroup();
+}
+
+void Settings::setCleanLog(bool f)
+{
+	m_settings.beginGroup("Diagnostics");
+	m_settings.setValue("CleanLogOnNextRun",f);
+	m_settings.endGroup();
+}
+
+bool Settings::cleanLog()
+{
+	bool rv=false;
+	m_settings.beginGroup("Diagnostics");
+	rv=m_settings.value("CleanLogOnNextRun",false).toBool();
+	m_settings.endGroup();
+	return rv;
+}
+
+QString Settings::logFileName()
+{
+	QString rv;
+	m_settings.beginGroup("Diagnostics");
+	rv=m_settings.value("LogFileName","parker.log").toString();
+	m_settings.endGroup();
+	return rv;
+}
+
+void Settings::setLogFileName(const QString& s)
+{
+	m_settings.beginGroup("Diagnostics");
+	m_settings.setValue("LogFileName",s);
+	m_settings.endGroup();
+}
+
