@@ -5,6 +5,8 @@ Legacy USB parking-assist software + PCB design files for a real shipped product
 This project was originally a commercial product sold to **a few hundred customers**.  
 It is now released publicly to support existing customer installations, maintenance, and long-term serviceability.
 
+Initial project funding was provided by Petroff Air, a luxury business-jet operator, which sought customization and updates for its Q8 fleet using custom embedded car computers.
+
 ![USBPark demo (Audi)](audi.jpeg)
 
 ## At a glance
