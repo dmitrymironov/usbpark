@@ -29,6 +29,25 @@ Available PCB design assets:
 - `pcb/Parking Sensor USB -v17b.brd`
 - `pcb/v18-schematic.webp`
 
+## Production and DIY artifacts
+
+These files capture both ends of the hardware lifecycle: final production output and practical home-lab support tooling.
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="v17b-batch.jpg" alt="v17b production PCB batch" />
+      <br />
+      <em>v17b production batch: last commercially manufactured board run.</em>
+    </td>
+    <td align="center" width="50%">
+      <img src="v18-iron-mask.png" alt="v18 iron mask for DIY single-metal PCB" />
+      <br />
+      <em>v18 iron mask: single-metal DIY transfer mask for home ironing workflow.</em>
+    </td>
+  </tr>
+</table>
+
 ## Software components
 
 ### `parktronic/`
@@ -110,6 +129,8 @@ usbpark-code/
 ├── firmware/     # PIC18F2550 USB firmware source
 ├── parktronic/   # Main desktop app + diagnostics + firmware update UI
 ├── pcb/          # Eagle schematic/board files + schematic image
+├── v17b-batch.jpg
+├── v18-iron-mask.png
 └── audi.jpeg     # Demo product image
 ```
 
