@@ -11,6 +11,7 @@ It is now released publicly to support existing customer installations, maintena
 
 - Desktop parking-assist software (`parktronic` and `audi`) built with Qt/C++.
 - Hardware design files in Eagle format (`.sch`, `.brd`) in [`pcb/`](pcb/).
+- PIC18 firmware source is included in [`firmware/`](firmware/).
 - PIC18F-based controller design (PIC18F2550 appears in the v18 schematic/board design).
 - Firmware update flow is integrated in the desktop app stack.
 
@@ -46,13 +47,26 @@ Alternate/variant desktop UI package for the same product family.
 - Qt project: `audi/audi.pro`
 - Vehicle-oriented UI assets and sound notifications
 
+### `firmware/`
+
+PIC18 USB firmware source for the controller device.
+
+- Main firmware entrypoint: `firmware/main.c`
+- USB stack integration: `firmware/usb_device.c`, `firmware/usb_function_generic.c`, `firmware/usb_descriptors.c`, `firmware/usb_config.h`
+- Version metadata: `firmware/version.h` (`VERSION_STRING "2.0.3"`)
+- Linker scripts for PIC18F2550 variants:
+  - `firmware/18F2550_NO_BOOTLOADER.lkr`
+  - `firmware/rm18f2550_HID_Bootload.lkr`
+- Protocol/sensor support files include I2C and DS1820 helpers plus line-decoding logic (`challenger26.*`, `i2c.*`, `ds1820.h`)
+
 ## PIC18F firmware context
 
 This project includes a PIC18F USB-controller hardware design and host-side firmware update integration:
 
 - Schematic/board reference to PIC18F2550 in `pcb/Parking Sensor USB -v18.sch` and `.brd`
 - Host software contains firmware version/update handling paths
-- Project include paths indicate integration with firmware source/export infrastructure
+- Firmware source tree now included directly under `firmware/`
+- Firmware code references legacy Microchip USB stack/C18 toolchain headers and bootloader settings (`../Bootloader/src/settings.h`)
 
 ## Build notes (legacy)
 
@@ -78,6 +92,7 @@ Notes:
 
 - The original environment references external/internal Novorado libraries and SDK paths.
 - You may need to adapt include/library paths before successful local builds.
+- Firmware sources are legacy PIC18/Microchip C18-era code and may require restoring the original Microchip USB stack layout/toolchain paths to build as-is.
 
 ## Why this repo is public
 
@@ -92,6 +107,7 @@ The code and hardware design are published to keep deployed units supportable fo
 ```text
 usbpark-code/
 ├── audi/         # Variant desktop app (Qt/C++)
+├── firmware/     # PIC18F2550 USB firmware source
 ├── parktronic/   # Main desktop app + diagnostics + firmware update UI
 ├── pcb/          # Eagle schematic/board files + schematic image
 └── audi.jpeg     # Demo product image
@@ -102,4 +118,3 @@ usbpark-code/
 - `pcb/LICENSE` currently contains an MIT license text for PCB artifacts.
 - Project history: originally commercial; now made public to support the installed base.
 - If you need strict legal classification for reuse (public domain vs MIT-only subsets), document it explicitly for your distribution before shipping derivatives.
-
